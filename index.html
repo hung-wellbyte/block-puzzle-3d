@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=2" />
+  <link rel="stylesheet" href="style.css?v=3" />
   <script type="importmap">
     {
       "imports": {
@@ -26,7 +26,7 @@
       <div class="logo"><i></i><i></i><i></i><i></i></div>
       <div>
         <h1>Block Puzzle 3D</h1>
-        <p>Lấp đầy bàn 8×8</p>
+        <p>Người chơi: <b id="userLabel">—</b></p>
       </div>
     </div>
     <div class="level-nav">
@@ -44,6 +44,9 @@
   </header>
 
   <div class="hud hud-right">
+    <button id="boardBtn" class="icon-btn" aria-label="Bảng xếp hạng" title="Bảng xếp hạng (B)">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 6H4v1a3 3 0 0 0 3 3M17 6h3v1a3 3 0 0 1-3 3"/></svg>
+    </button>
     <button id="helpBtn" class="icon-btn" aria-label="Hướng dẫn" title="Hướng dẫn">?</button>
     <button id="soundBtn" class="icon-btn" aria-label="Âm thanh" title="Bật/tắt âm thanh">
       <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M4 9v6h4l5 4V5L8 9H4z"/><path id="soundWaves" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/></svg>
@@ -85,7 +88,7 @@
         <li><kbd>Click</kbd> khối để nhấc lên, <kbd>Click</kbd> lần nữa trên bàn để đặt</li>
         <li><kbd>R</kbd> / <kbd>Chuột phải</kbd> / nút <b>Xoay</b> để xoay khối đang cầm</li>
         <li><kbd>Click</kbd> khối đã đặt để nhấc ra, <kbd>Chuột phải</kbd> để trả về khay</li>
-        <li><kbd>Esc</kbd> huỷ thao tác · <kbd>Ctrl Z</kbd> hoàn tác · <kbd>H</kbd> gợi ý · <kbd>S</kbd> xem/ẩn lời giải</li>
+        <li><kbd>Esc</kbd> huỷ thao tác · <kbd>Ctrl Z</kbd> hoàn tác · <kbd>H</kbd> gợi ý (tối đa 3 lần/màn) · <kbd>S</kbd> xem/ẩn lời giải · <kbd>B</kbd> bảng xếp hạng</li>
         <li><kbd>Kéo</kbd> vùng trống để xoay camera · <kbd>Cuộn</kbd> để phóng to/thu nhỏ</li>
       </ul>
       <button class="primary" data-close>Bắt đầu chơi</button>
@@ -102,15 +105,48 @@
         <div><span class="k">Lượt</span><span class="v" id="winMoves"></span></div>
         <div><span class="k">Gợi ý</span><span class="v" id="winHints"></span></div>
       </div>
+      <p class="win-rank" id="winRank"></p>
       <div class="row">
+        <button class="ghost" id="winBoard">Xếp hạng</button>
         <button class="ghost" id="winReplay">Chơi lại</button>
         <button class="primary" id="winNext">Màn tiếp theo →</button>
       </div>
     </div>
   </div>
 
+  <div id="userModal" class="modal" hidden>
+    <form class="card" id="userForm" novalidate>
+      <h2>Bạn là ai?</h2>
+      <p class="lead">Nhập user ID để ghi tên bạn lên bảng xếp hạng chung.</p>
+      <label class="field" for="userIdInput">User ID</label>
+      <input id="userIdInput" name="userId" maxlength="20" autocomplete="nickname" autocapitalize="off" spellcheck="false" placeholder="vd: hung.luu" />
+      <p class="field-hint" id="userError">2–20 ký tự: chữ, số, dấu chấm, gạch dưới hoặc gạch ngang.</p>
+      <button class="primary" type="submit">Vào chơi</button>
+    </form>
+  </div>
+
+  <div id="boardModal" class="modal" hidden>
+    <div class="card board">
+      <div class="board-head">
+        <h2>Bảng xếp hạng</h2>
+        <button class="icon-btn small" data-close aria-label="Đóng">×</button>
+      </div>
+      <div class="level-nav">
+        <button id="boardPrev" class="icon-btn small" aria-label="Màn trước">‹</button>
+        <span id="boardLevel">Màn 1</span>
+        <button id="boardNext" class="icon-btn small" aria-label="Màn sau">›</button>
+      </div>
+      <p class="board-note">Kỷ lục tốt nhất của mỗi người. Ít gợi ý hơn xếp trên, bằng nhau thì nhanh hơn xếp trên.</p>
+      <div class="board-list" id="boardList"></div>
+      <div class="board-foot">
+        <span>Bạn: <b id="boardUser">—</b></span>
+        <button class="ghost small" id="changeUser" type="button">Đổi user ID</button>
+      </div>
+    </div>
+  </div>
+
   <div id="loading"><div class="spinner"></div><span>Đang tải…</span></div>
 
-  <script type="module" src="js/main.js?v=2"></script>
+  <script type="module" src="js/main.js?v=3"></script>
 </body>
 </html>

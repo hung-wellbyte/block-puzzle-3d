@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { BOARD_SIZE as B, generateLevel } from './level.js?v=2';
+import { BOARD_SIZE as B, generateLevel } from './level.js?v=3';
+import { leaderboardEnabled, submitScore, fetchLeaderboard } from './leaderboard.js?v=3';
 
 // ---------- Constants ----------
 const HALF = B / 2;
@@ -11,6 +12,8 @@ const BLOCK_H = 0.5;
 const BASE_Y = TILE_TOP + BLOCK_H / 2;
 const HOLD_LIFT = 0.85;
 const DRAG_THRESHOLD = 6;
+const MAX_HINTS = 3;
+const USER_ID_RE = /^[\p{L}\p{N}._-]{2,20}$/u;
 const PALETTE = [
   0xff5a5f, 0xffb400, 0x2f80ed, 0x27ae60, 0x9b51e0, 0xff7a1a, 0x00b8a9, 0xeb5ea7,
   0x56ccf2, 0x8bd346, 0x5b6cff, 0xf2d14c, 0xc0392b, 0x1abc9c, 0xb07cff, 0xa0522d,
@@ -27,12 +30,12 @@ const ui = {
   filled: $('filled'), bar: $('progressBar'), toast: $('toast'),
   prev: $('prevLevel'), next: $('nextLevel'), undo: $('undoBtn'), rotate: $('rotateBtn'),
   hint: $('hintBtn'), solution: $('solutionBtn'), reset: $('resetBtn'), random: $('randomBtn'),
-  help: $('helpModal'), win: $('winModal'), sound: $('soundBtn'), camera: $('cameraBtn'),
+  help: $('helpModal'), win: $('winModal'), user: $('userModal'), board: $('boardModal'), sound: $('soundBtn'), camera: $('cameraBtn'),
 };
 
 // ---------- Persistence ----------
 const save = (() => {
-  let data = { level: 1, unlocked: 1, best: {}, sound: true, seenHelp: false };
+  let data = { level: 1, unlocked: 1, best: {}, sound: true, seenHelp: false, userId: '' };
   try { Object.assign(data, JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}); } catch { /* storage unavailable */ }
   return {
     data,
@@ -691,6 +694,10 @@ function undo() {
 
 function showHint() {
   if (won || revealed) return;
+  if (hintsUsed >= MAX_HINTS) {
+    toast(`Bạn đã dùng hết ${MAX_HINTS} gợi ý của màn này`);
+    return;
+  }
   if (holding) cancelHold(true);
   const occ = occupancy(null);
   const free = pieces.filter((p) => !p.placed);
@@ -703,7 +710,8 @@ function showHint() {
     setHintMarker(s, { color: 0xffb400, ghostColor: match.color });
     hintsUsed++;
     sfx.hint();
-    toast(`Gợi ý: đặt khối ${match.w}×${match.h} vào vùng đang sáng`);
+    toast(`Gợi ý: đặt khối ${match.w}×${match.h} vào vùng đang sáng (còn ${MAX_HINTS - hintsUsed} gợi ý)`);
+    updateHUD();
     return;
   }
   // No consistent hint left: point at a misplaced piece instead.
@@ -717,7 +725,8 @@ function showHint() {
     hint = { kind: 'wrong', piece: wrong, t: 6 };
     setHintMarker({ c: wrong.placed.c, r: wrong.placed.r, w, h }, { color: 0xff3b30, edgeH: BLOCK_H + 0.2 });
     hintsUsed++;
-    toast('Khối đang sáng có thể đặt sai vị trí — hãy thử gỡ nó ra');
+    toast(`Khối đang sáng có thể đặt sai vị trí, hãy thử gỡ nó ra (còn ${MAX_HINTS - hintsUsed} gợi ý)`);
+    updateHUD();
   } else {
     toast('Bạn đang đi đúng hướng!');
   }
@@ -777,6 +786,7 @@ function checkWin() {
 
   sfx.win();
   launchConfetti();
+  const rankPromise = recordScore();
   setTimeout(() => {
     [...ui.win.querySelectorAll('.stars span')].forEach((s, i) => s.classList.toggle('on', i < stars));
     $('winText').textContent = level.random
@@ -786,10 +796,107 @@ function checkWin() {
     $('winMoves').textContent = moves;
     $('winHints').textContent = hintsUsed;
     $('winNext').textContent = level.random ? 'Màn ngẫu nhiên mới →' : 'Màn tiếp theo →';
+    $('winBoard').hidden = level.random || !leaderboardEnabled;
+    rankPromise.then((msg) => { $('winRank').textContent = msg; });
     ui.win.hidden = false;
   }, 1300);
   updateHUD();
 }
+
+// ---------- Leaderboard ----------
+// Saves the win to the shared board and resolves to a line for the win dialog.
+async function recordScore() {
+  $('winRank').textContent = '';
+  if (level.random) return 'Màn ngẫu nhiên không tính vào bảng xếp hạng.';
+  if (solutionSeen) return 'Bạn đã xem lời giải nên lần này không được ghi vào bảng xếp hạng.';
+  if (!leaderboardEnabled) return '';
+  const userId = save.data.userId;
+  const lvl = level.number;
+  try {
+    await submitScore({ userId, level: lvl, timeMs: elapsed, hints: hintsUsed, moves });
+    const rows = await fetchLeaderboard(lvl, 1000);
+    const rank = rows.findIndex((r) => r.user_id.toLowerCase() === userId.toLowerCase()) + 1;
+    return rank ? `Kỷ lục của bạn đang đứng hạng #${rank} / ${rows.length} ở màn ${lvl}.` : 'Đã lưu kỷ lục.';
+  } catch (err) {
+    console.error(err);
+    return 'Không lưu được lên bảng xếp hạng. Kiểm tra kết nối mạng rồi thử lại sau.';
+  }
+}
+
+let boardLevel = 1;
+let boardRequest = 0;
+
+function openBoard(lvl) {
+  boardLevel = Math.max(1, lvl);
+  ui.board.hidden = false;
+  renderBoard();
+}
+
+async function renderBoard() {
+  const list = $('boardList');
+  $('boardLevel').textContent = `Màn ${boardLevel}`;
+  $('boardPrev').disabled = boardLevel <= 1;
+  $('boardUser').textContent = save.data.userId || '—';
+  if (!leaderboardEnabled) {
+    list.innerHTML = '<p class="board-empty">Bảng xếp hạng chưa được cấu hình.</p>';
+    return;
+  }
+  list.innerHTML = '<p class="board-empty">Đang tải…</p>';
+  const req = ++boardRequest;
+  try {
+    const rows = await fetchLeaderboard(boardLevel);
+    if (req !== boardRequest) return;
+    if (!rows.length) {
+      list.innerHTML = '<p class="board-empty">Chưa ai hoàn thành màn này. Hãy là người đầu tiên!</p>';
+      return;
+    }
+    const me = save.data.userId.toLowerCase();
+    list.replaceChildren(...rows.map((r, i) => {
+      const row = document.createElement('div');
+      row.className = 'board-row' + (r.user_id.toLowerCase() === me ? ' me' : '');
+      const cells = [
+        ['rank', `${i + 1}`],
+        ['name', r.user_id],
+        ['time', formatTime(r.time_ms)],
+        ['hints', r.hints ? `${r.hints} gợi ý` : 'không gợi ý'],
+      ];
+      for (const [cls, text] of cells) {
+        const span = document.createElement('span');
+        span.className = cls;
+        span.textContent = text;
+        row.append(span);
+      }
+      return row;
+    }));
+  } catch (err) {
+    console.error(err);
+    if (req === boardRequest) list.innerHTML = '<p class="board-empty">Không tải được bảng xếp hạng. Kiểm tra kết nối mạng rồi thử lại.</p>';
+  }
+}
+
+// ---------- User ID ----------
+function askUserId() {
+  const input = $('userIdInput');
+  input.value = save.data.userId;
+  $('userError').classList.remove('error');
+  ui.user.hidden = false;
+  setTimeout(() => input.focus(), 50);
+}
+
+$('userForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const id = $('userIdInput').value.trim();
+  if (!USER_ID_RE.test(id)) {
+    $('userError').classList.add('error');
+    return;
+  }
+  save.data.userId = id;
+  save.write();
+  $('userLabel').textContent = id;
+  ui.user.hidden = true;
+  if (!ui.board.hidden) renderBoard();
+  else if (!save.data.seenHelp) ui.help.hidden = false;
+});
 
 // ---------- HUD ----------
 function formatTime(ms) {
@@ -810,7 +917,9 @@ function updateHUD() {
   ui.next.disabled = !level.random && level.number >= save.data.unlocked;
   ui.undo.disabled = !revealed && !holding && undoStack.length === 0;
   ui.rotate.classList.toggle('active', !!holding);
-  ui.rotate.disabled = ui.hint.disabled = !!revealed;
+  ui.rotate.disabled = !!revealed;
+  ui.hint.disabled = !!revealed || hintsUsed >= MAX_HINTS;
+  ui.hint.querySelector('span').textContent = `Gợi ý (${MAX_HINTS - hintsUsed})`;
   ui.solution.classList.toggle('active', !!revealed);
   ui.solution.querySelector('span').textContent = revealed ? 'Ẩn lời giải' : 'Lời giải';
 }
@@ -1017,6 +1126,14 @@ $('winNext').addEventListener('click', () => {
   else loadLevel(level.number + 1);
 });
 $('helpBtn').addEventListener('click', () => { ui.help.hidden = false; });
+$('boardBtn').addEventListener('click', () => openBoard(level.random ? save.data.level : level.number));
+$('winBoard').addEventListener('click', () => openBoard(level.number));
+$('boardPrev').addEventListener('click', () => { boardLevel = Math.max(1, boardLevel - 1); renderBoard(); });
+$('boardNext').addEventListener('click', () => { boardLevel++; renderBoard(); });
+$('changeUser').addEventListener('click', askUserId);
+ui.board.addEventListener('click', (e) => {
+  if (e.target === ui.board || e.target.closest('[data-close]')) ui.board.hidden = true;
+});
 ui.help.addEventListener('click', (e) => {
   if (e.target === ui.help || e.target.hasAttribute('data-close')) {
     ui.help.hidden = true;
@@ -1033,6 +1150,11 @@ ui.sound.addEventListener('click', () => {
 });
 
 window.addEventListener('keydown', (e) => {
+  if (!ui.user.hidden || e.target instanceof HTMLInputElement) return;
+  if (!ui.board.hidden) {
+    if (e.key === 'Escape') ui.board.hidden = true;
+    return;
+  }
   if (!ui.help.hidden) {
     if (e.key === 'Escape' || e.key === 'Enter') ui.help.querySelector('[data-close]').click();
     return;
@@ -1049,6 +1171,7 @@ window.addEventListener('keydown', (e) => {
   else if (key === 's') toggleSolution();
   else if (key === 'n') ui.random.click();
   else if (key === 'c') resetCamera();
+  else if (key === 'b') $('boardBtn').click();
 });
 
 // ---------- Boot ----------
@@ -1057,7 +1180,9 @@ syncSoundButton();
 loadLevel(Math.min(save.data.level, save.data.unlocked));
 animate();
 $('loading').classList.add('done');
-if (!save.data.seenHelp) ui.help.hidden = false;
+$('userLabel').textContent = save.data.userId || '—';
+if (!save.data.userId) askUserId();
+else if (!save.data.seenHelp) ui.help.hidden = false;
 
 // Debug hook for automated testing: open with ?debug
 if (new URLSearchParams(location.search).has('debug')) {
