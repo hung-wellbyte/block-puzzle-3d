@@ -128,6 +128,43 @@ ghost.visible = false;
 ghost.renderOrder = 2;
 scene.add(ghost);
 
+// Hint marker: pulsing fill, raised border and a floating ghost of the suggested piece.
+const hintGroup = new THREE.Group();
+hintGroup.visible = false;
+scene.add(hintGroup);
+const hintFillMat = new THREE.MeshBasicMaterial({ color: 0xffb400, transparent: true, opacity: 0.5, depthWrite: false });
+const hintFill = new THREE.Mesh(new THREE.BoxGeometry(1, 0.02, 1), hintFillMat);
+hintFill.renderOrder = 2;
+const hintEdgeMat = new THREE.MeshStandardMaterial({ color: 0xffb400, emissive: 0xffb400, emissiveIntensity: 0.6, roughness: 0.4 });
+const hintEdges = [0, 1, 2, 3].map(() => new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), hintEdgeMat));
+const hintGhostMat = new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.4, depthWrite: false, roughness: 0.4 });
+const hintGhost = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), hintGhostMat);
+hintGroup.add(hintFill, hintGhost, ...hintEdges);
+
+function setHintMarker(rect, { color, ghostColor = null, edgeH = 0.14 }) {
+  const { c, r, w, h } = rect;
+  hintGroup.position.set(cellX(c, w), 0, cellX(r, h));
+  hintFillMat.color.set(color);
+  hintEdgeMat.color.set(color);
+  hintEdgeMat.emissive.set(color);
+  hintFill.scale.set(w - 0.04, 1, h - 0.04);
+  hintFill.position.y = TILE_TOP + 0.015;
+  const t = 0.09;
+  const bars = [
+    [w + t, t, 0, -h / 2], [w + t, t, 0, h / 2],
+    [t, h + t, -w / 2, 0], [t, h + t, w / 2, 0],
+  ];
+  bars.forEach(([sx, sz, x, z], i) => {
+    hintEdges[i].scale.set(sx, edgeH, sz);
+    hintEdges[i].position.set(x, TILE_TOP + edgeH / 2, z);
+  });
+  hintGhost.visible = ghostColor !== null;
+  if (ghostColor !== null) {
+    hintGhostMat.color.set(ghostColor);
+    hintGhost.scale.set(w - 0.1, BLOCK_H, h - 0.1);
+  }
+}
+
 // ---------- Block meshes ----------
 const bodyGeoCache = new Map();
 function bodyGeo(w, h) {
@@ -185,7 +222,7 @@ let downOnCanvas = false;
 const downPos = { x: 0, y: 0 };
 const pointer = { ndc: new THREE.Vector2(), inside: false, dirty: true };
 
-let hint = null; // { cells, piece, t }
+let hint = null; // { kind: 'place' | 'wrong', piece, t }
 let ghostFlash = 0;
 
 const dims = (p) => (p.rotSteps % 2 ? [p.h, p.w] : [p.w, p.h]);
@@ -243,9 +280,9 @@ function loadLevel(number, { random = false, seed } = {}) {
     fixedBlocks.push(block);
   }
 
-  const colorOffset = levelSeed % PALETTE.length;
+  // Each block shape keeps the same colour on every level.
   data.pieces.forEach((d, i) => {
-    const color = PALETTE[(i + colorOffset) % PALETTE.length];
+    const color = PALETTE[i % PALETTE.length];
     const { group, body, mats } = buildBlock(d.w, d.h, color, false);
     const p = {
       id: i, w: d.w, h: d.h, color, solution: d.solution, mesh: group, mats,
@@ -479,7 +516,6 @@ function pickUp(p) {
   p.placed = null;
   p.holdPos = p.mesh.position.clone().setY(BASE_Y + HOLD_LIFT);
   controls.enabled = false;
-  hint = null;
   sfx.pick();
   updateHold();
   updateHUD();
@@ -499,6 +535,8 @@ function release() {
     }
   }
   holdStart = null;
+  // A hint is done once the suggested piece is placed (or the misplaced one is lifted off).
+  if (hint && (hint.kind === 'place' ? hint.piece.placed : !hint.piece.placed)) hint = null;
   updateHUD();
   checkWin();
 }
@@ -661,9 +699,8 @@ function showHint() {
     if (!rectFree(occ, s.c, s.r, s.w, s.h)) continue;
     const match = free.find((p) => (p.w === s.w && p.h === s.h) || (p.w === s.h && p.h === s.w));
     if (!match) continue;
-    const cells = [];
-    for (let y = s.r; y < s.r + s.h; y++) for (let x = s.c; x < s.c + s.w; x++) cells.push([x, y]);
-    hint = { cells, piece: match, t: 3 };
+    hint = { kind: 'place', piece: match, t: 10 };
+    setHintMarker(s, { color: 0xffb400, ghostColor: match.color });
     hintsUsed++;
     sfx.hint();
     toast(`Gợi ý: đặt khối ${match.w}×${match.h} vào vùng đang sáng`);
@@ -676,7 +713,9 @@ function showHint() {
     return !pieces.some((q) => q.solution.c === p.placed.c && q.solution.r === p.placed.r && q.solution.w === w && q.solution.h === h);
   });
   if (wrong) {
-    hint = { cells: [], piece: wrong, t: 3 };
+    const [w, h] = dims(wrong);
+    hint = { kind: 'wrong', piece: wrong, t: 6 };
+    setHintMarker({ c: wrong.placed.c, r: wrong.placed.r, w, h }, { color: 0xff3b30, edgeH: BLOCK_H + 0.2 });
     hintsUsed++;
     toast('Khối đang sáng có thể đặt sai vị trí — hãy thử gỡ nó ra');
   } else {
@@ -865,7 +904,6 @@ function updateConfetti(dt) {
 // ---------- Main loop ----------
 const clock = new THREE.Clock();
 const tmpTarget = new THREE.Vector3();
-const black = new THREE.Color(0x000000);
 const warnColor = new THREE.Color(0xff3b30);
 const unitScale = new THREE.Vector3(1, 1, 1);
 
@@ -914,7 +952,7 @@ function animate() {
     p.mesh.scale.lerp(unitScale, k(10));
 
     const isHint = hint && hint.piece === p;
-    const glow = isHint ? 0.25 + 0.25 * Math.sin(time * 8) : p.hoverT * 0.16 + (p === holding ? 0.1 : 0);
+    const glow = isHint ? 0.4 + 0.3 * Math.sin(time * 8) : p.hoverT * 0.16 + (p === holding ? 0.1 : 0);
     for (const m of p.mats) {
       if (isHint && p.placed) m.emissive.copy(warnColor);
       else m.emissive.setHex(p.color);
@@ -930,19 +968,14 @@ function animate() {
     f.mesh.position.z = base.z;
   }
 
-  // Tile highlight for hints.
-  const lit = new Set(hint ? hint.cells.map(([x, y]) => `${x},${y}`) : []);
-  for (let r = 0; r < B; r++) {
-    for (let c = 0; c < B; c++) {
-      const m = tiles[r][c].material;
-      if (lit.has(`${c},${r}`)) {
-        m.emissive.set(0xffb400);
-        m.emissiveIntensity = 0.35 + 0.3 * Math.sin(time * 8);
-      } else if (m.emissiveIntensity !== 0) {
-        m.emissive.copy(black);
-        m.emissiveIntensity = 0;
-      }
-    }
+  hintGroup.visible = !!hint;
+  if (hint) {
+    const fade = Math.min(1, hint.t / 0.5);
+    const pulse = 0.5 + 0.5 * Math.sin(time * 6);
+    hintFillMat.opacity = (0.3 + 0.35 * pulse) * fade;
+    hintEdgeMat.emissiveIntensity = 0.3 + 0.6 * pulse;
+    hintGhostMat.opacity = (0.3 + 0.2 * pulse) * fade;
+    hintGhost.position.y = BASE_Y + 0.25 + Math.sin(time * 3) * 0.1;
   }
 
   if (camTween) {

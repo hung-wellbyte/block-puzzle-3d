@@ -1,12 +1,15 @@
-// Level generation: places the 3 fixed obstacle blocks, then partitions the
-// remaining cells into rectangles. Because the player pieces are cut from an
-// actual tiling, every generated level is guaranteed to be solvable.
+// Level generation for the Mondrian-style set: 3 fixed black blocks plus a
+// fixed set of 8 coloured blocks that exactly cover the remaining 58 cells.
+// A level is made by randomly tiling the whole board with all 11 blocks, then
+// keeping the black blocks where they landed — so every level is solvable.
+// A solver counts how many solutions a black placement allows; fewer
+// solutions means a harder level.
 
 export const BOARD_SIZE = 8;
 
 // [w, h] — w spans columns (x), h spans rows (z)
-const FIXED_SHAPES = [[1, 1], [1, 2], [1, 3]];
-const MAX_SIDE = 4;
+export const FIXED_SHAPES = [[1, 1], [1, 2], [1, 3]];
+export const PLAYER_SHAPES = [[3, 4], [2, 5], [2, 4], [3, 3], [2, 3], [1, 5], [1, 4], [2, 2]];
 
 export function mulberry32(seed) {
   let a = seed >>> 0;
@@ -18,103 +21,114 @@ export function mulberry32(seed) {
   };
 }
 
-// Weights are per rectangle shape, keyed by area. Later levels favour smaller
-// pieces, which means more pieces and a harder search for the player.
-function difficultyFor(level) {
-  if (level <= 3) return { weights: { 2: 0.3, 3: 0.9, 4: 1.4, 6: 1.6, 8: 1.0 }, target: [9, 12] };
-  if (level <= 8) return { weights: { 2: 0.7, 3: 1.2, 4: 1.5, 6: 1.1, 8: 0.4 }, target: [12, 15] };
-  return { weights: { 2: 1.1, 3: 1.5, 4: 1.4, 6: 0.7, 8: 0.15 }, target: [15, 18] };
+function shuffle(rng, arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
 }
+
+const orientations = ([w, h]) => (w === h ? [[w, h]] : [[w, h], [h, w]]);
 
 function emptyGrid() {
   return Array.from({ length: BOARD_SIZE }, () => new Array(BOARD_SIZE).fill(false));
 }
 
 function rectFree(grid, c, r, w, h) {
-  if (c < 0 || r < 0 || c + w > BOARD_SIZE || r + h > BOARD_SIZE) return false;
+  if (c + w > BOARD_SIZE || r + h > BOARD_SIZE) return false;
   for (let y = r; y < r + h; y++) for (let x = c; x < c + w; x++) if (grid[y][x]) return false;
   return true;
 }
 
-function fillRect(grid, c, r, w, h) {
-  for (let y = r; y < r + h; y++) for (let x = c; x < c + w; x++) grid[y][x] = true;
+function setRect(grid, c, r, w, h, v) {
+  for (let y = r; y < r + h; y++) for (let x = c; x < c + w; x++) grid[y][x] = v;
 }
 
-// Fixed blocks must not touch each other (not even diagonally) so they spread
-// across the board; that constraint is dropped if it can't be satisfied.
-function placeFixed(rng, grid) {
-  const fixed = [];
-  const halo = emptyGrid();
-  for (const [sw, sh] of FIXED_SHAPES) {
-    const [w, h] = rng() < 0.5 ? [sw, sh] : [sh, sw];
-    let placed = false;
-    for (let attempt = 0; attempt < 400 && !placed; attempt++) {
-      const c = Math.floor(rng() * (BOARD_SIZE - w + 1));
-      const r = Math.floor(rng() * (BOARD_SIZE - h + 1));
-      if (!rectFree(grid, c, r, w, h)) continue;
-      if (attempt < 300 && !rectFree(halo, c, r, w, h)) continue;
-      fillRect(grid, c, r, w, h);
-      for (let y = r - 1; y <= r + h; y++)
-        for (let x = c - 1; x <= c + w; x++)
-          if (x >= 0 && y >= 0 && x < BOARD_SIZE && y < BOARD_SIZE) halo[y][x] = true;
-      fixed.push({ c, r, w, h });
-      placed = true;
-    }
-  }
-  return fixed;
+function firstEmpty(grid) {
+  for (let r = 0; r < BOARD_SIZE; r++) for (let c = 0; c < BOARD_SIZE; c++) if (!grid[r][c]) return [c, r];
+  return null;
 }
 
-function partition(rng, grid, weights) {
-  const g = grid.map((row) => row.slice());
-  const parts = [];
-  for (let r = 0; r < BOARD_SIZE; r++) {
-    for (let c = 0; c < BOARD_SIZE; c++) {
-      if (g[r][c]) continue;
-      const cands = [];
-      for (let h = 1; h <= MAX_SIDE; h++) {
-        for (let w = 1; w <= MAX_SIDE; w++) {
-          const area = w * h;
-          const wt = area === 1 ? 0.0001 : weights[area];
-          if (!wt || !rectFree(g, c, r, w, h)) continue;
-          cands.push({ w, h, wt });
-        }
+// Covers the board with every shape exactly once. The first empty cell in
+// row-major order must be the top-left corner of whichever block covers it.
+function randomTiling(rng, shapes) {
+  const grid = emptyGrid();
+  const used = new Array(shapes.length).fill(false);
+  const out = new Array(shapes.length);
+  const rec = () => {
+    const cell = firstEmpty(grid);
+    if (!cell) return true;
+    const [c, r] = cell;
+    for (const i of shuffle(rng, shapes.map((_, k) => k))) {
+      if (used[i]) continue;
+      for (const [w, h] of shuffle(rng, orientations(shapes[i]))) {
+        if (!rectFree(grid, c, r, w, h)) continue;
+        setRect(grid, c, r, w, h, true);
+        used[i] = true;
+        out[i] = { c, r, w, h };
+        if (rec()) return true;
+        used[i] = false;
+        setRect(grid, c, r, w, h, false);
       }
-      const total = cands.reduce((s, k) => s + k.wt, 0);
-      let pick = rng() * total;
-      let chosen = cands[cands.length - 1];
-      for (const k of cands) {
-        pick -= k.wt;
-        if (pick <= 0) { chosen = k; break; }
-      }
-      fillRect(g, c, r, chosen.w, chosen.h);
-      parts.push({ c, r, w: chosen.w, h: chosen.h });
     }
-  }
-  return parts;
+    return false;
+  };
+  return rec() ? out : null;
 }
 
-function score(parts, target) {
-  const singles = parts.filter((p) => p.w * p.h === 1).length;
-  const n = parts.length;
-  const off = n < target[0] ? target[0] - n : n > target[1] ? n - target[1] : 0;
-  return singles * 10 + off * 2;
+// Number of ways to place PLAYER_SHAPES around the given fixed blocks, up to `limit`.
+export function countSolutions(fixed, limit = 50) {
+  const grid = emptyGrid();
+  for (const f of fixed) setRect(grid, f.c, f.r, f.w, f.h, true);
+  const used = new Array(PLAYER_SHAPES.length).fill(false);
+  let count = 0;
+  const rec = () => {
+    const cell = firstEmpty(grid);
+    if (!cell) { count++; return; }
+    const [c, r] = cell;
+    for (let i = 0; i < PLAYER_SHAPES.length && count < limit; i++) {
+      if (used[i]) continue;
+      for (const [w, h] of orientations(PLAYER_SHAPES[i])) {
+        if (!rectFree(grid, c, r, w, h)) continue;
+        setRect(grid, c, r, w, h, true);
+        used[i] = true;
+        rec();
+        used[i] = false;
+        setRect(grid, c, r, w, h, false);
+        if (count >= limit) return;
+      }
+    }
+  };
+  rec();
+  return count;
+}
+
+// Accepted solution-count range per level; harder levels allow fewer solutions.
+function difficultyFor(level) {
+  if (level <= 3) return [8, Infinity];
+  if (level <= 7) return [3, 7];
+  if (level <= 12) return [2, 2];
+  return [1, 1];
 }
 
 export function generateLevel(seed, level) {
   const rng = mulberry32(seed);
-  const { weights, target } = difficultyFor(level);
+  const [lo, hi] = difficultyFor(level);
+  const shapes = [...FIXED_SHAPES, ...PLAYER_SHAPES];
   let best = null;
-  for (let attempt = 0; attempt < 120; attempt++) {
-    const grid = emptyGrid();
-    const fixed = placeFixed(rng, grid);
-    if (fixed.length !== FIXED_SHAPES.length) continue;
-    const parts = partition(rng, grid, weights);
-    const s = score(parts, target);
-    if (!best || s < best.s) best = { s, fixed, parts };
-    if (s === 0) break;
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const tiling = randomTiling(rng, shapes);
+    if (!tiling) continue;
+    const fixed = tiling.slice(0, FIXED_SHAPES.length);
+    const solutions = countSolutions(fixed, Math.min(hi, 50) + 1);
+    const miss = solutions < lo ? lo - solutions : solutions > hi ? solutions - hi : 0;
+    if (!best || miss < best.miss) best = { miss, tiling, solutions };
+    if (miss === 0) break;
   }
-  const pieces = best.parts
-    .map((p) => ({ w: Math.max(p.w, p.h), h: Math.min(p.w, p.h), solution: p }))
-    .sort((a, b) => b.w * b.h - a.w * a.h || b.w - a.w);
-  return { fixed: best.fixed, pieces };
+  const { tiling, solutions } = best;
+  const pieces = PLAYER_SHAPES.map(([w, h], i) => ({
+    w: Math.max(w, h), h: Math.min(w, h), solution: tiling[FIXED_SHAPES.length + i],
+  }));
+  return { fixed: tiling.slice(0, FIXED_SHAPES.length), pieces, solutions };
 }
