@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { BOARD_SIZE as B, generateLevel } from './level.js?v=3';
-import { leaderboardEnabled, submitScore, fetchLeaderboard } from './leaderboard.js?v=3';
+import { BOARD_SIZE as B, generateLevel } from './level.js?v=4';
+import { leaderboardEnabled, submitScore, fetchLeaderboard } from './leaderboard.js?v=4';
 
 // ---------- Constants ----------
 const HALF = B / 2;
@@ -29,7 +29,7 @@ const ui = {
   level: $('levelLabel'), time: $('time'), moves: $('moves'), left: $('left'),
   filled: $('filled'), bar: $('progressBar'), toast: $('toast'),
   prev: $('prevLevel'), next: $('nextLevel'), undo: $('undoBtn'), rotate: $('rotateBtn'),
-  hint: $('hintBtn'), solution: $('solutionBtn'), reset: $('resetBtn'), random: $('randomBtn'),
+  hint: $('hintBtn'), reset: $('resetBtn'), random: $('randomBtn'),
   help: $('helpModal'), win: $('winModal'), user: $('userModal'), board: $('boardModal'), sound: $('soundBtn'), camera: $('cameraBtn'),
 };
 
@@ -211,8 +211,6 @@ let hintsUsed = 0;
 let startTime = 0;
 let elapsed = 0;
 let won = false;
-let revealed = null; // snapshot of the board taken before the solution was shown
-let solutionSeen = false;
 let winT = 0;
 
 let holding = null;
@@ -312,8 +310,6 @@ function resetProgress() {
   won = false;
   winT = 0;
   hint = null;
-  revealed = null;
-  solutionSeen = false;
   startTime = performance.now();
   elapsed = 0;
   ui.win.hidden = true;
@@ -593,10 +589,6 @@ function rotateHeld() {
 
 function onPointerDown(e) {
   if (won) return;
-  if (revealed) {
-    toast('Đang xem lời giải — bấm “Ẩn lời giải” để tiếp tục chơi');
-    return;
-  }
   setPointer(e);
   pointer.inside = true;
   downOnCanvas = true;
@@ -682,7 +674,6 @@ controls.addEventListener('start', () => { camTween = null; });
 
 // ---------- Actions ----------
 function undo() {
-  if (revealed) { toggleSolution(); return; }
   if (holding) { cancelHold(); return; }
   const prev = undoStack.pop();
   if (!prev) { toast('Không còn gì để hoàn tác'); return; }
@@ -693,7 +684,7 @@ function undo() {
 }
 
 function showHint() {
-  if (won || revealed) return;
+  if (won) return;
   if (hintsUsed >= MAX_HINTS) {
     toast(`Bạn đã dùng hết ${MAX_HINTS} gợi ý của màn này`);
     return;
@@ -732,47 +723,15 @@ function showHint() {
   }
 }
 
-// Shows the generated solution; pressing again restores the player's own arrangement.
-function toggleSolution() {
-  if (won) return;
-  if (revealed) {
-    restore(revealed);
-    revealed = null;
-    sfx.back();
-    updateHUD();
-    return;
-  }
-  cancelHold(true);
-  hint = null;
-  revealed = snapshot();
-  solutionSeen = true;
-  const token = revealed;
-  [...pieces]
-    .sort((a, b) => a.solution.r - b.solution.r || a.solution.c - b.solution.c)
-    .forEach((p, i) => {
-      setTimeout(() => {
-        if (revealed !== token) return;
-        const s = p.solution;
-        if ((s.w !== p.w) !== (p.rotSteps % 2 !== 0)) p.rotSteps -= 1;
-        p.placed = { c: s.c, r: s.r };
-        p.mesh.scale.set(1.08, 0.78, 1.08);
-        sfx.place();
-        updateHUD();
-      }, i * 90);
-    });
-  toast('Lời giải của màn này — bấm lại để ẩn và tiếp tục chơi');
-  updateHUD();
-}
-
 function checkWin() {
-  if (won || revealed || !pieces.every((p) => p.placed)) return;
+  if (won || !pieces.every((p) => p.placed)) return;
   const occ = occupancy(null);
   if (!occ.every((row) => row.every(Boolean))) return;
   won = true;
   winT = 0;
   elapsed = performance.now() - startTime;
   const n = pieces.length;
-  const stars = solutionSeen ? 1 : hintsUsed === 0 ? 3 : hintsUsed <= 2 ? 2 : 1;
+  const stars = hintsUsed === 0 ? 3 : hintsUsed <= 2 ? 2 : 1;
 
   if (!level.random) {
     const key = String(level.number);
@@ -808,7 +767,6 @@ function checkWin() {
 async function recordScore() {
   $('winRank').textContent = '';
   if (level.random) return 'Màn ngẫu nhiên không tính vào bảng xếp hạng.';
-  if (solutionSeen) return 'Bạn đã xem lời giải nên lần này không được ghi vào bảng xếp hạng.';
   if (!leaderboardEnabled) return '';
   const userId = save.data.userId;
   const lvl = level.number;
@@ -915,13 +873,10 @@ function updateHUD() {
   ui.bar.style.width = `${(filled / (B * B)) * 100}%`;
   ui.prev.disabled = !level.random && level.number <= 1;
   ui.next.disabled = !level.random && level.number >= save.data.unlocked;
-  ui.undo.disabled = !revealed && !holding && undoStack.length === 0;
+  ui.undo.disabled = !holding && undoStack.length === 0;
   ui.rotate.classList.toggle('active', !!holding);
-  ui.rotate.disabled = !!revealed;
-  ui.hint.disabled = !!revealed || hintsUsed >= MAX_HINTS;
+  ui.hint.disabled = hintsUsed >= MAX_HINTS;
   ui.hint.querySelector('span').textContent = `Gợi ý (${MAX_HINTS - hintsUsed})`;
-  ui.solution.classList.toggle('active', !!revealed);
-  ui.solution.querySelector('span').textContent = revealed ? 'Ẩn lời giải' : 'Lời giải';
 }
 
 let toastTimer = 0;
@@ -1110,7 +1065,6 @@ window.addEventListener('resize', resize);
 ui.undo.addEventListener('click', undo);
 ui.rotate.addEventListener('click', rotateHeld);
 ui.hint.addEventListener('click', showHint);
-ui.solution.addEventListener('click', toggleSolution);
 ui.reset.addEventListener('click', restartLevel);
 ui.random.addEventListener('click', () => loadLevel(level.number, { random: true }));
 ui.camera.addEventListener('click', resetCamera);
@@ -1168,7 +1122,6 @@ window.addEventListener('keydown', (e) => {
   if (key === 'r' || key === ' ') { e.preventDefault(); rotateHeld(); }
   else if (key === 'escape') cancelHold();
   else if (key === 'h') showHint();
-  else if (key === 's') toggleSolution();
   else if (key === 'n') ui.random.click();
   else if (key === 'c') resetCamera();
   else if (key === 'b') $('boardBtn').click();

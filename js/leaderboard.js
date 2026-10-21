@@ -1,5 +1,5 @@
 // Shared leaderboard backed by Supabase's REST API (no client library needed).
-import { SUPABASE_URL, SUPABASE_KEY } from './config.js?v=3';
+import { SUPABASE_URL, SUPABASE_KEY } from './config.js?v=4';
 
 export const leaderboardEnabled = Boolean(SUPABASE_URL && SUPABASE_KEY);
 
