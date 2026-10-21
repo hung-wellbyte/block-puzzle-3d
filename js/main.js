@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { BOARD_SIZE as B, generateLevel } from './level.js';
+import { BOARD_SIZE as B, generateLevel } from './level.js?v=2';
 
 // ---------- Constants ----------
 const HALF = B / 2;
